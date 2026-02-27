@@ -17,6 +17,7 @@ package net.milkbowl.vault;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.lang.reflect.Method;
 import java.net.URL;
 import java.net.URLConnection;
 import java.util.Collection;
@@ -89,12 +90,18 @@ public class Vault extends JavaPlugin {
     private String currentVersionTitle = "";
     private ServicesManager sm;
     private Vault plugin;
+    private Object foliaAsyncTask;
+    private boolean foliaServer;
 
     @Override
     public void onDisable() {
         // Remove all Service Registrations
         getServer().getServicesManager().unregisterAll(this);
-        Bukkit.getScheduler().cancelTasks(this);
+        if (foliaServer) {
+            cancelFoliaAsyncTask();
+        } else {
+            Bukkit.getScheduler().cancelTasks(this);
+        }
     }
 
     @Override
@@ -104,6 +111,12 @@ public class Vault extends JavaPlugin {
         currentVersionTitle = getDescription().getVersion().split("-")[0];
         currentVersion = Double.valueOf(currentVersionTitle.replaceFirst("\\.", ""));
         sm = getServer().getServicesManager();
+        foliaServer = isFoliaServer();
+
+        if (foliaServer) {
+            log.warning("Folia support is extremely experimental. Stability is not guaranteed.");
+        }
+
         // set defaults
         getConfig().addDefault("update-check", true);
         getConfig().options().copyDefaults(true);
@@ -117,7 +130,7 @@ public class Vault extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new VaultListener(), this);
         // Schedule to check the version every 30 minutes for an update. This is to update the most recent 
         // version so if an admin reconnects they will be warned about newer versions.
-        this.getServer().getScheduler().runTask(this, new Runnable() {
+        runGlobalTask(new Runnable() {
 
             @Override
             public void run() {
@@ -131,7 +144,7 @@ public class Vault extends JavaPlugin {
                 }
                 perm.setDescription("Allows a user or the console to check for vault updates");
 
-                getServer().getScheduler().runTaskTimerAsynchronously(plugin, new Runnable() {
+                runAsyncRepeatingTask(new Runnable() {
 
                     @Override
                     public void run() {
@@ -160,6 +173,69 @@ public class Vault extends JavaPlugin {
         findCustomData(metrics);
 
         log.info(String.format("Enabled Version %s", getDescription().getVersion()));
+    }
+
+    private boolean isFoliaServer() {
+        try {
+            getServer().getClass().getMethod("getGlobalRegionScheduler");
+            return true;
+        } catch (NoSuchMethodException e) {
+            return false;
+        }
+    }
+
+    private void runGlobalTask(Runnable runnable) {
+        if (!foliaServer) {
+            getServer().getScheduler().runTask(this, runnable);
+            return;
+        }
+
+        try {
+            Object scheduler = getServer().getClass().getMethod("getGlobalRegionScheduler").invoke(getServer());
+            Method execute = scheduler.getClass().getMethod("execute", Plugin.class, Runnable.class);
+            execute.invoke(scheduler, this, runnable);
+        } catch (Exception e) {
+            log.warning("Failed to use Folia global scheduler, falling back to Bukkit scheduler.");
+            getServer().getScheduler().runTask(this, runnable);
+        }
+    }
+
+    private void runAsyncRepeatingTask(final Runnable runnable, final long delayTicks, final long periodTicks) {
+        if (!foliaServer) {
+            getServer().getScheduler().runTaskTimerAsynchronously(this, runnable, delayTicks, periodTicks);
+            return;
+        }
+
+        try {
+            Object scheduler = getServer().getClass().getMethod("getAsyncScheduler").invoke(getServer());
+            Class<?> consumerClass = Class.forName("java.util.function.Consumer");
+            Object consumer = java.lang.reflect.Proxy.newProxyInstance(
+                consumerClass.getClassLoader(),
+                new Class<?>[] { consumerClass },
+                (proxy, method, args) -> {
+                    runnable.run();
+                    return null;
+                }
+            );
+            Method runAtFixedRate = scheduler.getClass().getMethod("runAtFixedRate", Plugin.class, consumerClass, long.class, long.class, java.util.concurrent.TimeUnit.class);
+            foliaAsyncTask = runAtFixedRate.invoke(scheduler, this, consumer, delayTicks * 50L, periodTicks * 50L, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            log.warning("Failed to use Folia async scheduler, falling back to Bukkit async scheduler.");
+            getServer().getScheduler().runTaskTimerAsynchronously(this, runnable, delayTicks, periodTicks);
+        }
+    }
+
+    private void cancelFoliaAsyncTask() {
+        if (foliaAsyncTask == null) {
+            return;
+        }
+
+        try {
+            Method cancel = foliaAsyncTask.getClass().getMethod("cancel");
+            cancel.invoke(foliaAsyncTask);
+        } catch (Exception e) {
+            log.warning("Failed to cancel Folia async task cleanly.");
+        }
     }
 
     /**
