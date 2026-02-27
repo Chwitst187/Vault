@@ -17,6 +17,8 @@ package net.milkbowl.vault;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.URL;
 import java.net.URLConnection;
@@ -61,7 +63,9 @@ import org.bstats.charts.SimplePie;
 import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.command.Command;
+import org.bukkit.command.CommandMap;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.PluginCommand;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -125,8 +129,7 @@ public class Vault extends JavaPlugin {
         loadPermission();
         loadChat();
 
-        getCommand("vault-info").setExecutor(this);
-        getCommand("vault-convert").setExecutor(this);
+        registerVaultCommands();
         getServer().getPluginManager().registerEvents(new VaultListener(), this);
         // Schedule to check the version every 30 minutes for an update. This is to update the most recent 
         // version so if an admin reconnects they will be warned about newer versions.
@@ -235,6 +238,55 @@ public class Vault extends JavaPlugin {
             cancel.invoke(foliaAsyncTask);
         } catch (Exception e) {
             log.warning("Failed to cancel Folia async task cleanly.");
+        }
+    }
+
+    private void registerVaultCommands() {
+        registerVaultCommand("vault-info", "Displays information about Vault", "/<command> - Displays Vault information", "vault.admin");
+        registerVaultCommand("vault-convert", "Converts all data in economy1 and dumps it into economy2", "/<command> [economy1] [economy2]", "vault.admin");
+    }
+
+    private void registerVaultCommand(String name, String description, String usage, String permission) {
+        try {
+            CommandMap commandMap = getCommandMap();
+            if (commandMap == null) {
+                log.severe("Unable to register command " + name + ": no command map is available.");
+                return;
+            }
+
+            Command existingCommand = commandMap.getCommand(name);
+            if (existingCommand instanceof PluginCommand) {
+                ((PluginCommand) existingCommand).setExecutor(this);
+                return;
+            }
+
+            Constructor<PluginCommand> constructor = PluginCommand.class.getDeclaredConstructor(String.class, Plugin.class);
+            constructor.setAccessible(true);
+            PluginCommand command = constructor.newInstance(name, this);
+            command.setDescription(description);
+            command.setUsage(usage);
+            command.setPermission(permission);
+            command.setExecutor(this);
+            commandMap.register(getDescription().getName().toLowerCase(), command);
+        } catch (Exception e) {
+            log.severe("Unable to register command " + name + ": " + e.getMessage());
+        }
+    }
+
+    private CommandMap getCommandMap() {
+        try {
+            Method method = getServer().getClass().getMethod("getCommandMap");
+            return (CommandMap) method.invoke(getServer());
+        } catch (Exception ignored) {
+            // Fall through and try plugin manager reflection.
+        }
+
+        try {
+            Field commandMapField = getServer().getPluginManager().getClass().getDeclaredField("commandMap");
+            commandMapField.setAccessible(true);
+            return (CommandMap) commandMapField.get(getServer().getPluginManager());
+        } catch (Exception e) {
+            return null;
         }
     }
 
