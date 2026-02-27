@@ -134,7 +134,7 @@ public class Vault extends JavaPlugin {
 
             @Override
             public void run() {
-                // Programmatically set the default permission value cause Bukkit doesn't handle plugin.yml properly for Load order STARTUP plugins
+                // Programmatically set the default permission value because plugin metadata permissions may not be initialized yet for STARTUP plugins
                 org.bukkit.permissions.Permission perm = getServer().getPluginManager().getPermission("vault.update");
                 if (perm == null)
                 {
